@@ -17,11 +17,11 @@
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 
 # ==================== 配置区 ====================
-# 主链接: GitHub raw 直链 (把 用户名/仓库名 换成你自己的)
-# 如果国内网络拉不动, 换用下面的镜像, 三选一:
-#   镜像1: https://mirror.ghproxy.com/https://raw.githubusercontent.com/用户名/仓库/main/notice.png
-#   镜像2: https://fastly.jsdelivr.net/gh/用户名/仓库@main/notice.png
-URL="https://raw.githubusercontent.com/你的用户名/你的仓库/main/notice.png"
+# 主链接: GitHub raw 直链
+# 国内网络拉不动就换注释里的镜像行, 三选一
+URL="https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
+# URL="https://mirror.ghproxy.com/https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
+# URL="https://fastly.jsdelivr.net/gh/asklinsh-debug/kindle-notice@main/notice.png"
 
 # 输出路径: 改成你 linkss 屏保目录里的实际文件名
 # (注意: 用「固定文件名 + 覆盖」而不是每次新名字, linkss 才会一直展示最新这张)
@@ -37,6 +37,10 @@ CA="/mnt/us/board/ca-bundle.crt"
 # 1 = 每次下载成功后立即刷屏 (公告板推荐开, 会短暂白屏刷新一次)
 # 0 = 只覆盖文件, 等下次进入屏保时自然生效 (适合白天还在看书的场景)
 FLASH_ON_UPDATE=1
+
+# 状态文件: 记录上次内容的指纹 (ETag/MD5), 内容没变就不下载、不刷屏、不换屏保
+ETAG_FILE="/mnt/us/board/etag.txt"
+MD5_FILE="/mnt/us/board/md5.txt"
 # ================================================
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
@@ -65,6 +69,22 @@ if ! echo "$gw" | grep -q '^[0-9]'; then
 fi
 log "WiFi OK (gateway=$gw)"
 
+# ---------- 1.5 状态检查: 内容没变就跳过 (省电省流量) ----------
+# test 模式强制下载; 正常模式先 HEAD 请求比对 ETag
+FORCE=0
+[ "$TEST" -eq 1 ] && FORCE=1
+
+if [ "$FORCE" -eq 0 ]; then
+    etag=$(curl -sI --connect-timeout 10 --max-time 20 "$URL" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
+    old_etag=$(cat "$ETAG_FILE" 2>/dev/null)
+    if [ -n "$etag" ] && [ "$etag" = "$old_etag" ] && [ -f "$OUT" ]; then
+        log "SKIP: 内容未变 (etag), 关 WiFi 结束"
+        lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
+        exit 0
+    fi
+    # ETag 拿不到(网络/镜像差异)则继续走完整下载, 由 MD5 兜底比对
+fi
+
 # ---------- 2. 下载 ----------
 # 先按正规证书校验下载; 若本机 CA 太旧导致失败, 且提供了 CA 包则用 CA 包,
 # 最后兜底 -k 跳过校验 (公告板场景可接受)
@@ -90,7 +110,20 @@ if [ -f "${OUT}.tmp" ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
+    # MD5 兜底比对: 内容与上次一致 -> 不覆盖不刷屏
+    new_md5=$(md5sum "${OUT}.tmp" 2>/dev/null | awk '{print $1}')
+    old_md5=$(cat "$MD5_FILE" 2>/dev/null)
+    if [ "$FORCE" -eq 0 ] && [ -n "$new_md5" ] && [ "$new_md5" = "$old_md5" ] && [ -f "$OUT" ]; then
+        rm -f "${OUT}.tmp"
+        [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
+        log "SKIP: 内容未变 (md5), 关 WiFi 结束"
+        lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
+        exit 0
+    fi
+
     mv "${OUT}.tmp" "$OUT"
+    [ -n "$new_md5" ] && echo "$new_md5" > "$MD5_FILE"
+    [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 更新成功 (${size} bytes)"
     if [ "$TEST" -eq 1 ] || [ "$FLASH_ON_UPDATE" -eq 1 ]; then
         eips -f "$OUT" >/dev/null 2>&1   # 立即刷屏显示

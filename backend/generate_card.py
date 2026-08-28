@@ -41,6 +41,10 @@ TZ = timezone(timedelta(hours=8))  # 东八区
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 FONT_REG = os.path.join(FONT_DIR, "SourceHanSansSC-Regular.otf")
 FONT_BOLD = os.path.join(FONT_DIR, "SourceHanSansSC-Heavy.otf")
+
+# 远程公告 (手机端发布, 持久化在仓库根目录 notice_config.env)
+NOTICE_TEXT = ""
+NOTICE_UNTIL = ""   # 格式: 2026-09-05 18:00 或 2026-09-05, 留空=长期有效
 # =============================================
 
 WEEK_CN = ["一", "二", "三", "四", "五", "六", "日"]
@@ -292,8 +296,90 @@ def draw_board(now, weather, lunar_line, holiday, quote):
     print(f"saved: {OUT} ({os.path.getsize(OUT)} bytes)")
 
 
+def parse_until(s):
+    """解析下线时间, 支持 2026-09-05 18:00 / 2026-09-05"""
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=TZ)
+        except ValueError:
+            pass
+    return None
+
+
+def load_notice_config():
+    """读取仓库根目录 notice_config.env (手机发布入口, 持久化公告)"""
+    global NOTICE_TEXT, NOTICE_UNTIL
+    p = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "notice_config.env",
+    )
+    if not os.path.exists(p):
+        return
+    try:
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k == "NOTICE_TEXT" and v.strip():
+                    NOTICE_TEXT = v.strip()
+                elif k == "NOTICE_UNTIL" and v.strip():
+                    NOTICE_UNTIL = v.strip()
+    except Exception as e:
+        print("notice config failed:", e)
+
+
+def draw_notice_board(now, text, until, weather):
+    """远程公告模式: 大字公告 + 底部时间天气条"""
+    img = Image.new("L", (W, H), 255)
+    d = ImageDraw.Draw(img)
+
+    # ---- 顶部黑条: 公告 / 有效期 ----
+    d.rectangle([0, 0, W, 66], fill=0)
+    f_head = font(32, bold=True)
+    d.text((28, 18), "公 告", font=f_head, fill=255)
+    tag = f"至 {until:%m-%d %H:%M} 前" if until else "长期有效"
+    rtext(d, W - 28, 20, tag, f_head, fill=255)
+
+    # ---- 公告正文 (最多 5 行, 超出截断) ----
+    f_body = font(46, bold=True)
+    lines = wrap(text, f_body, 700)
+    if len(lines) > 5:
+        lines = lines[:5]
+        lines[-1] = lines[-1][:-1] + "…"
+    y = 150 - (len(lines) - 1) * 29  # 垂直居中于 ~150..430
+    for ln in lines:
+        ctext(d, W / 2, y, ln, f_body)
+        y += 58
+
+    # ---- 底部状态条: 时间 + 天气 ----
+    d.line([40, 480, W - 40, 480], fill=0, width=3)
+    f_clock = font(68, bold=True)
+    d.text((60, 508), f"{now:%H:%M}", font=f_clock, fill=0)
+    if weather:
+        f_w = font(34, bold=True)
+        rtext(d, W - 60, 524, f'{weather["desc"]} {weather["temp"]}°C', f_w)
+
+    img.save(OUT, "PNG")
+    print(f"saved (NOTICE MODE): {OUT} ({os.path.getsize(OUT)} bytes)")
+
+
 def main():
     now = datetime.now(TZ)
+    load_notice_config()
+    until = parse_until(NOTICE_UNTIL)
+
+    # 公告激活条件: 有内容 且 (未设下线时间 或 未到期) -> 到期自动切回常规看板
+    if NOTICE_TEXT and (until is None or now <= until):
+        weather = get_weather()
+        print(f"notice active, until: {until or 'forever'}")
+        draw_notice_board(now, NOTICE_TEXT, until, weather)
+        return
+
+    # 常规时间看板
     weather = get_weather()
     lunar_line = get_lunar_line(now)
     holiday = get_next_holiday(now)
