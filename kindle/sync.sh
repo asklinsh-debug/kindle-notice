@@ -1,141 +1,164 @@
 #!/bin/sh
 # ============================================================
-# Kindle 墨水屏公告板 · 同步脚本
-# 逻辑: 开 WiFi -> 等 IP -> curl 下载图片覆盖屏保 -> 关 WiFi
+# Kindle 公告板 · 接收端 (Kindle 7 / linkss)
 #
-# 安装 (SSH/KUAL 终端里执行):
-#   mkdir -p /mnt/us/board
-#   # 把本脚本放到 /mnt/us/board/sync.sh
-#   chmod +x /mnt/us/board/sync.sh
+# 职责只有三件事: 拉图 -> 落盘 -> 显示
+# 生成图片、天气、农历、公告这些全在云端 (Cloudflare Worker) 做,
+# 这里只是一个"哑终端"。
 #
-# 手动测试 (下载后立即刷屏预览):
-#   /mnt/us/board/sync.sh test
+# 两种显示模式:
+#   [常亮模式] 屏幕永不休眠, eips -g 直接把看板刷在唤醒的屏幕上 (默认关闭)
+#   [屏保模式] 写到 linkss 屏保目录, 锁屏时显示 (安静, 不打扰阅读)
 #
-# 定时运行见 README/crontab 说明
+# 命令:
+#   sync.sh                同步一次 (内容没变则跳过)
+#   sync.sh force          强制同步并刷屏
+#   sync.sh enable_cron    开启每 15 分钟自动同步
+#   sync.sh disable_cron   关闭自动同步
+#   sync.sh enable_always_on   开启常亮显示
+#   sync.sh disable_always_on  关闭常亮显示
+#
+# 日志: /mnt/us/notice_sync.log  (插电脑可直接看)
 # ============================================================
 
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 
-# ==================== 配置区 ====================
-# 主链接: GitHub raw 直链
-# 国内网络拉不动就换注释里的镜像行, 三选一
-URL="https://kindle.nbhub.dpdns.org/notice.png"
-# URL="https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
-# URL="https://mirror.ghproxy.com/https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
-# URL="https://fastly.jsdelivr.net/gh/asklinsh-debug/kindle-notice@main/notice.png"
+# ==================== 配置 ====================
+BASE="https://kindle.nbhub.dpdns.org"   # 云端地址
+URL_PNG="$BASE/notice.png"              # 屏保用 (linkss)
+URL_G8="$BASE/notice.g8"                # 常亮用 (eips -g 原始灰度 600x800)
 
-# 输出路径: 改成你 linkss 屏保目录里的实际文件名
-# (注意: 用「固定文件名 + 覆盖」而不是每次新名字, linkss 才会一直展示最新这张)
-OUT="/mnt/us/linkss/screensavers/00_board.png"
+OUT_PNG="/mnt/us/linkss/screensavers/bg_ss00.png"  # linkss 屏保文件
+OUT_G8="/mnt/us/notice_sync/board.g8"             # 常亮显示的灰度数据
 
-LOG="/mnt/us/board/sync.log"
+LOG="/mnt/us/notice_sync.log"
+ETAG_FILE="/mnt/us/notice_sync/.etag"
+FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
+FLAG_ON="/mnt/us/notice_sync/.always_on"
+CRON_LINE="*/15 * * * * /mnt/us/notice_sync/sync.sh"
+KEEPALIVE="/mnt/us/notice_sync/keepalive.sh"
 
-# 可选: 放一份新版 CA 证书包 (cacert.pem 改名为 ca-bundle.crt)
-# 下载地址: https://curl.se/ca/cacert.pem  -> 传到 Kindle /mnt/us/board/
-# 留空则退回用 -k 跳过证书校验
-CA="/mnt/us/board/ca-bundle.crt"
-
-# 1 = 每次下载成功后立即刷屏 (公告板推荐开, 会短暂白屏刷新一次)
-# 0 = 只覆盖文件, 等下次进入屏保时自然生效 (适合白天还在看书的场景)
-FLASH_ON_UPDATE=1
-
-# 状态文件: 记录上次内容的指纹 (ETag/MD5), 内容没变就不下载、不刷屏、不换屏保
-ETAG_FILE="/mnt/us/board/etag.txt"
-MD5_FILE="/mnt/us/board/md5.txt"
-# ================================================
+W=600
+H=800
+G8_SIZE=$((W * H))   # 480000 字节
+# ==============================================
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
-TEST=0
-[ "$1" = "test" ] && TEST=1
+FORCE=0
+[ "$1" = "force" ] && FORCE=1
 
-# ---------- 1. 开 WiFi 并等待拿到 IP ----------
+# ---------- 常亮模式开关 ----------
+if [ "$1" = "enable_always_on" ] || [ "$1" = "disable_always_on" ]; then
+    if [ "$1" = "enable_always_on" ]; then
+        touch "$FLAG_ON"
+        "$KEEPALIVE" start
+        log "常亮: 已开启 (屏幕保持显示看板)"
+        exec "$0" force          # 立刻刷一次, 让看板出现在唤醒的屏幕上
+    else
+        rm -f "$FLAG_ON"
+        "$KEEPALIVE" stop
+        lipc-set-prop com.lab126.powerd preventScreenSaver 0 >/dev/null 2>&1
+        log "常亮: 已关闭 (恢复锁屏屏保显示)"
+        exit 0
+    fi
+fi
+
+# ---------- 定时开关 ----------
+if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
+    mntroot rw
+    sed -i '\#notice_sync/sync.sh#d' /etc/crontab/root 2>/dev/null
+    if [ "$1" = "enable_cron" ]; then
+        echo "$CRON_LINE" >> /etc/crontab/root
+        touch "$FLAG_CRON"
+        log "定时: 已开启 ($CRON_LINE)"
+    else
+        rm -f "$FLAG_CRON"
+        log "定时: 已关闭"
+    fi
+    mntroot ro
+    # 重启 crond; 必须 -c /etc/crontab, 否则它读默认目录, 我们的表不生效
+    /etc/init.d/cron restart 2>/dev/null || {
+        killall crond 2>/dev/null
+        sleep 1
+        crond -b -c /etc/crontab 2>/dev/null
+    }
+    [ "$1" = "enable_cron" ] && exec "$0" sync
+    exit 0
+fi
+
+# ---------- 常亮状态恢复 (每次运行都重新拉起, 重启后也能自愈) ----------
+if [ -f "$FLAG_ON" ]; then
+    lipc-set-prop com.lab126.powerd preventScreenSaver 1 >/dev/null 2>&1
+    "$KEEPALIVE" start
+fi
+
+# ================= 1. 开 WiFi =================
+lipc-set-prop com.lab126.cmd wirelessEnable 1 >/dev/null 2>&1
 lipc-set-prop -i com.lab126.wifid enableAndConnect >/dev/null 2>&1
-
 gw=""
 i=0
-while [ $i -lt 15 ]; do
+while [ $i -lt 20 ]; do
     gw=$(lipc-get-prop com.lab126.wifid gatewayIP 2>/dev/null)
-    case "$gw" in
-        [0-9]*) break ;;   # 拿到网关 IP 即认为连接成功
-    esac
-    sleep 2
+    case "$gw" in [0-9]*) break ;; esac
+    cm=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+    case "$cm" in CONNECTED*) gw="connected"; break ;; esac
+    ifconfig wlan0 2>/dev/null | grep -q 'inet addr' && { gw="connected"; break; }
+    sleep 3
     i=$((i+1))
 done
-
-if ! echo "$gw" | grep -q '^[0-9]'; then
-    log "ERROR: WiFi 连接失败, 放弃本次同步"
-    lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
+if [ -z "$gw" ]; then
+    log "ERROR: WiFi 连接失败 (USB 模式下或未保存 WiFi 时属正常)"
+    lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
     exit 1
 fi
-log "WiFi OK (gateway=$gw)"
 
-# ---------- 1.5 状态检查: 内容没变就跳过 (省电省流量) ----------
-# test 模式强制下载; 正常模式先 HEAD 请求比对 ETag
-FORCE=0
-[ "$TEST" -eq 1 ] && FORCE=1
-
+# ================= 2. 有没有新内容 =================
 if [ "$FORCE" -eq 0 ]; then
-    etag=$(curl -sI --connect-timeout 10 --max-time 20 "$URL" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
-    old_etag=$(cat "$ETAG_FILE" 2>/dev/null)
-    if [ -n "$etag" ] && [ "$etag" = "$old_etag" ] && [ -f "$OUT" ]; then
-        log "SKIP: 内容未变 (etag), 关 WiFi 结束"
-        lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
+    etag=$(curl -sI --connect-timeout 8 --max-time 15 "$URL_PNG" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
+    if [ -n "$etag" ] && [ "$etag" = "$(cat "$ETAG_FILE" 2>/dev/null)" ] && [ -f "$OUT_G8" ]; then
+        log "SKIP: 内容未变"
+        lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
         exit 0
     fi
-    # ETag 拿不到(网络/镜像差异)则继续走完整下载, 由 MD5 兜底比对
 fi
 
-# ---------- 2. 下载 ----------
-# 先按正规证书校验下载; 若本机 CA 太旧导致失败, 且提供了 CA 包则用 CA 包,
-# 最后兜底 -k 跳过校验 (公告板场景可接受)
-CURL_BASE="--connect-timeout 10 --max-time 60 -sS -L -o ${OUT}.tmp"
-curl $CURL_BASE "$URL" 2>/dev/null
-if [ $? -ne 0 ]; then
-    if [ -n "$CA" ] && [ -f "$CA" ]; then
-        log "retry with cacert"
-        curl $CURL_BASE --cacert "$CA" "$URL" 2>/dev/null
-    fi
-fi
-if [ $? -ne 0 ]; then
-    log "retry with -k (insecure)"
-    curl -k $CURL_BASE "$URL" 2>/dev/null
-fi
+# ================= 3. 下载 =================
+TMP_G8="/tmp/board.g8"
+TMP_PNG="/tmp/board.png"
+curl --connect-timeout 10 --max-time 60 -sS -L -o "$TMP_G8" "$URL_G8" 2>/dev/null || curl -k --connect-timeout 10 --max-time 60 -sS -L -o "$TMP_G8" "$URL_G8" 2>/dev/null
+curl --connect-timeout 10 --max-time 60 -sS -L -o "$TMP_PNG" "$URL_PNG" 2>/dev/null || curl -k --connect-timeout 10 --max-time 60 -sS -L -o "$TMP_PNG" "$URL_PNG" 2>/dev/null
 
-# ---------- 3. 校验并覆盖 ----------
-ok=0
-if [ -f "${OUT}.tmp" ]; then
-    size=$(wc -c < "${OUT}.tmp" | tr -d ' \t')
-    # PNG 魔数校验 + 大小校验(正常 800x600 图至少几十 KB)
-    head -c 4 "${OUT}.tmp" | grep -q $'\x89PNG' && [ "$size" -gt 20000 ] && ok=1
+# ================= 4. 校验并落盘 =================
+size_g8=$(wc -c < "$TMP_G8" 2>/dev/null | tr -d ' \t')
+ok_png=0
+[ -f "$TMP_PNG" ] && head -c 4 "$TMP_PNG" | grep -q $'\x89PNG' && ok_png=1
+
+if [ "$size_g8" != "$G8_SIZE" ] && [ "$ok_png" -eq 0 ]; then
+    log "ERROR: 下载失败 (g8=$size_g8 png=$ok_png)"
+    rm -f "$TMP_G8" "$TMP_PNG"
+    lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
+    exit 1
 fi
 
-if [ "$ok" -eq 1 ]; then
-    # MD5 兜底比对: 内容与上次一致 -> 不覆盖不刷屏
-    new_md5=$(md5sum "${OUT}.tmp" 2>/dev/null | awk '{print $1}')
-    old_md5=$(cat "$MD5_FILE" 2>/dev/null)
-    if [ "$FORCE" -eq 0 ] && [ -n "$new_md5" ] && [ "$new_md5" = "$old_md5" ] && [ -f "$OUT" ]; then
-        rm -f "${OUT}.tmp"
-        [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
-        log "SKIP: 内容未变 (md5), 关 WiFi 结束"
-        lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
-        exit 0
-    fi
+if [ "$size_g8" = "$G8_SIZE" ]; then
+    cp "$TMP_G8" "$OUT_G8"
+    log "OK: 灰度数据已更新 ($size_g8 bytes)"
+fi
+if [ "$ok_png" -eq 1 ]; then
+    cp "$TMP_PNG" "$OUT_PNG"
+    log "OK: 屏保图已更新 ($(wc -c < "$TMP_PNG" | tr -d ' \t') bytes)"
+fi
+[ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
+rm -f "$TMP_G8" "$TMP_PNG"
 
-    mv "${OUT}.tmp" "$OUT"
-    [ -n "$new_md5" ] && echo "$new_md5" > "$MD5_FILE"
-    [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
-    log "OK: 更新成功 (${size} bytes)"
-    if [ "$TEST" -eq 1 ] || [ "$FLASH_ON_UPDATE" -eq 1 ]; then
-        eips -c >/dev/null 2>&1            # 先清屏
-        eips -f "$OUT" >/dev/null 2>&1   # 立即刷屏显示
-    fi
-else
-    log "ERROR: 下载失败或文件无效, 保留旧屏保"
-    rm -f "${OUT}.tmp"
+# ================= 5. 显示 =================
+# 常亮模式: 直接刷到唤醒的屏幕; 屏保模式: 不动, 锁屏时由 linkss 显示
+if [ -f "$FLAG_ON" ] && [ -f "$OUT_G8" ]; then
+    eips -c >/dev/null 2>&1
+    eips -g "$OUT_G8" >/dev/null 2>&1
+    log "显示: 已刷屏 (常亮模式)"
 fi
 
-# ---------- 4. 关 WiFi 省电 ----------
-lipc-set-prop com.lab126.wifid enable 0 >/dev/null 2>&1
-log "WiFi off"
+lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
 exit 0
