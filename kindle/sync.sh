@@ -127,6 +127,7 @@ if [ "$ok" -eq 1 ]; then
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 更新成功 (${size} bytes)"
     if [ "$TEST" -eq 1 ] || [ "$FLASH_ON_UPDATE" -eq 1 ]; then
+        eips -c >/dev/null 2>&1            # 先清屏
         eips -f "$OUT" >/dev/null 2>&1   # 立即刷屏显示
     fi
 else
