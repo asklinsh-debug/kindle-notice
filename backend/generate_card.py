@@ -29,7 +29,7 @@ except ImportError:
     HAS_LUNAR = False
 
 # ==================== 配置 ====================
-W, H = 800, 600
+W, H = 600, 800   # Kindle 7 / 600x800 竖屏 (如换设备, 按屏幕实际像素改这里)
 OUT = os.environ.get("OUTPUT_PATH", "notice.png")
 
 CITY = os.environ.get("CITY", "菏泽")
@@ -230,67 +230,67 @@ def wrap(text, f, max_w):
 
 
 def draw_board(now, weather, lunar_line, holiday, quote):
+    """常规时间看板 (600x800 竖版)"""
     img = Image.new("L", (W, H), 255)
     d = ImageDraw.Draw(img)
 
     # ---- 顶部黑条: 日期 / 农历节气 ----
-    d.rectangle([0, 0, W, 66], fill=0)
-    f_head = font(28, bold=True)
-    d.text((28, 20), f"{now:%Y年%m月%d日} 星期{WEEK_CN[now.weekday()]}", font=f_head, fill=255)
+    d.rectangle([0, 0, W, 62], fill=0)
+    f_head = font(26, bold=True)
+    d.text((24, 19), f"{now:%m月%d日} 周{WEEK_CN[now.weekday()]}", font=f_head, fill=255)
     if lunar_line:
-        rtext(d, W - 28, 20, lunar_line, f_head, fill=255)
+        rtext(d, W - 24, 21, lunar_line, font(23), fill=255)
 
-    # ---- 大时钟 ----
-    f_clock = font(168, bold=True)
+    # ---- 大时钟 (y 70~290) ----
+    f_clock = font(176, bold=True)
     clock = f"{now:%H:%M}"
     bb = f_clock.getbbox(clock)
     cw = bb[2] - bb[0]
     ch = bb[3] - bb[1]
-    d.text(((W - cw) / 2 - bb[0], 175 - ch / 2 - bb[1]), clock, font=f_clock, fill=0)
+    d.text(((W - cw) / 2 - bb[0], 182 - ch / 2 - bb[1]), clock, font=f_clock, fill=0)
 
     # ---- 分隔线 ----
     d.line([40, 300, W - 40, 300], fill=0, width=3)
 
-    # ---- 天气区 (y 320~455) ----
+    # ---- 天气区 (y 320~470) ----
     if weather:
         # 左侧图标框
-        d.rectangle([40, 318, 195, 452], outline=0, width=5)
-        f_icon = font(80, bold=True)
+        d.rectangle([40, 320, 185, 462], outline=0, width=5)
+        f_icon = font(74, bold=True)
         bb = f_icon.getbbox(weather["icon"])
         d.text(
-            (117.5 - (bb[2] - bb[0]) / 2 - bb[0], 385 - (bb[1] + bb[3]) / 2),
+            (112.5 - (bb[2] - bb[0]) / 2 - bb[0], 391 - (bb[1] + bb[3]) / 2),
             weather["icon"], font=f_icon, fill=0,
         )
-        # 中间: 当前温度 + 湿度
-        f_temp = font(84, bold=True)
-        d.text((225, 322), f'{weather["temp"]}°C', font=f_temp, fill=0)
-        f_desc = font(28)
-        d.text((228, 418), f'{weather["desc"]}｜湿度{weather["rh"]}%', font=f_desc, fill=0)
-        # 右侧: 今日温度区间 / 节假日倒计时 / 风力
-        f_range = font(40, bold=True)
-        rtext(d, W - 42, 330, f'{weather["tmin"]}~{weather["tmax"]}°', f_range)
-        f_hol = font(26)
+        # 右侧: 温度 + 描述
+        f_temp = font(76, bold=True)
+        d.text((212, 328), f'{weather["temp"]}°', font=f_temp, fill=0)
+        f_desc = font(25)
+        d.text((214, 424), f'{weather["desc"]}｜湿度{weather["rh"]}%', font=f_desc, fill=0)
+        # 极右列: 温度区间 / 节假日 / 风力
+        f_range = font(30, bold=True)
+        rtext(d, W - 32, 344, f'{weather["tmin"]}~{weather["tmax"]}°', f_range)
         if holiday:
-            rtext(d, W - 42, 392, holiday, f_hol)
-        rtext(d, W - 42, 424, f'风{weather["wind"]}km/h', font(24))
+            rtext(d, W - 32, 400, holiday, font(22))
+        rtext(d, W - 32, 430, f'风{weather["wind"]}km/h', font(20))
     else:
-        f_err = font(36)
-        d.text((60, 370), "天气数据获取失败，仅显示时间与问候", font=f_err, fill=0)
+        f_err = font(32)
+        d.text((60, 380), "天气获取失败，仅显示时间与问候", font=f_err, fill=0)
         if holiday:
-            rtext(d, W - 42, 392, holiday, font(26))
+            rtext(d, W - 36, 398, holiday, font(23))
 
-    # ---- 每日一句话卡片 (y 478~560) ----
-    d.rectangle([40, 476, W - 40, 562], outline=0, width=3)
+    # ---- 每日一句话卡片 (y 500~665, 最多 3 行) ----
+    d.rectangle([40, 498, W - 40, 662], outline=0, width=3)
     f_q = font(30)
-    lines = wrap(quote, f_q, 660)[:2]
-    y = 502 if len(lines) == 1 else 490
+    lines = wrap(quote, f_q, 470)[:3]
+    y = {1: 566, 2: 546, 3: 526}[len(lines)]
     for ln in lines:
         ctext(d, W / 2, y, ln, f_q)
-        y += 38
+        y += 42
 
-    # ---- 页脚 ----
-    f_foot = font(20)
-    ctext(d, W / 2, 576, f"{CITY} · 自动更新于 {now:%m-%d %H:%M} · 每小时刷新", f_foot)
+    # ---- 页脚 (贴近底部) ----
+    f_foot = font(19)
+    ctext(d, W / 2, 766, f"{now:%Y} · {CITY} · 自动更新于 {now:%m-%d %H:%M}", f_foot)
 
     img.save(OUT, "PNG")
     print(f"saved: {OUT} ({os.path.getsize(OUT)} bytes)")
@@ -333,35 +333,35 @@ def load_notice_config():
 
 
 def draw_notice_board(now, text, until, weather):
-    """远程公告模式: 大字公告 + 底部时间天气条"""
+    """远程公告模式 (600x800 竖版): 大字公告 + 底部时间天气条"""
     img = Image.new("L", (W, H), 255)
     d = ImageDraw.Draw(img)
 
     # ---- 顶部黑条: 公告 / 有效期 ----
-    d.rectangle([0, 0, W, 66], fill=0)
-    f_head = font(32, bold=True)
-    d.text((28, 18), "公 告", font=f_head, fill=255)
+    d.rectangle([0, 0, W, 62], fill=0)
+    f_head = font(28, bold=True)
+    d.text((24, 18), "公 告", font=f_head, fill=255)
     tag = f"至 {until:%m-%d %H:%M} 前" if until else "长期有效"
-    rtext(d, W - 28, 20, tag, f_head, fill=255)
+    rtext(d, W - 24, 21, tag, font(23), fill=255)
 
-    # ---- 公告正文 (最多 5 行, 超出截断) ----
-    f_body = font(46, bold=True)
-    lines = wrap(text, f_body, 700)
-    if len(lines) > 5:
-        lines = lines[:5]
+    # ---- 公告正文 (最多 10 行, 超出截断) ----
+    f_body = font(44, bold=True)
+    lines = wrap(text, f_body, 520)
+    if len(lines) > 10:
+        lines = lines[:10]
         lines[-1] = lines[-1][:-1] + "…"
-    y = 150 - (len(lines) - 1) * 29  # 垂直居中于 ~150..430
+    y = 300 - (len(lines) - 1) * 28  # 垂直居中于 ~110..500
     for ln in lines:
         ctext(d, W / 2, y, ln, f_body)
-        y += 58
+        y += 56
 
     # ---- 底部状态条: 时间 + 天气 ----
-    d.line([40, 480, W - 40, 480], fill=0, width=3)
-    f_clock = font(68, bold=True)
-    d.text((60, 508), f"{now:%H:%M}", font=f_clock, fill=0)
+    d.line([40, 680, W - 40, 680], fill=0, width=3)
+    f_clock = font(66, bold=True)
+    d.text((56, 712), f"{now:%H:%M}", font=f_clock, fill=0)
     if weather:
-        f_w = font(34, bold=True)
-        rtext(d, W - 60, 524, f'{weather["desc"]} {weather["temp"]}°C', f_w)
+        f_w = font(30, bold=True)
+        rtext(d, W - 56, 730, f'{weather["desc"]} {weather["temp"]}°', f_w)
 
     img.save(OUT, "PNG")
     print(f"saved (NOTICE MODE): {OUT} ({os.path.getsize(OUT)} bytes)")
