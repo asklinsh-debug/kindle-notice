@@ -45,7 +45,7 @@ jobs:
       - name: Generate image
         working-directory: backend
         env:
-          OUTPUT_PATH: notice.png
+          OUTPUT_PATH: ../notice.png   # working-directory 是 backend/, 输出到仓库根目录
           CITY: "菏泽"
           LAT: "35.24"
           LON: "115.48"
