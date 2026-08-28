@@ -19,7 +19,8 @@ PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
 # ==================== 配置区 ====================
 # 主链接: GitHub raw 直链
 # 国内网络拉不动就换注释里的镜像行, 三选一
-URL="https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
+URL="https://kindle.nbhub.dpdns.org/notice.png"
+# URL="https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
 # URL="https://mirror.ghproxy.com/https://raw.githubusercontent.com/asklinsh-debug/kindle-notice/main/notice.png"
 # URL="https://fastly.jsdelivr.net/gh/asklinsh-debug/kindle-notice@main/notice.png"
 
