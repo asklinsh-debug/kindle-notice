@@ -1,0 +1,66 @@
+name: Generate notice image
+
+on:
+  push:
+    branches: [main]         # 首次推文件即自动生成第一张图
+  schedule:
+    - cron: "0 * * * *"     # 每小时整点 (UTC, 与北京时间整点一致)
+  workflow_dispatch: {}      # 支持手动触发, 方便调试
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notice
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 防循环: bot 自己提交的 notice.png 不再触发新一轮运行
+    if: github.actor != 'github-actions[bot]'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Ensure fonts (思源黑体)
+        run: |
+          mkdir -p backend/fonts
+          if [ ! -f backend/fonts/SourceHanSansSC-Regular.otf ]; then
+            curl -fsSL -o backend/fonts/SourceHanSansSC-Regular.otf \
+              https://github.com/adobe-fonts/source-han-sans/raw/release/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf
+          fi
+          if [ ! -f backend/fonts/SourceHanSansSC-Heavy.otf ]; then
+            curl -fsSL -o backend/fonts/SourceHanSansSC-Heavy.otf \
+              https://github.com/adobe-fonts/source-han-sans/raw/release/OTF/SimplifiedChinese/SourceHanSansSC-Heavy.otf
+          fi
+          ls -la backend/fonts
+
+      - name: Generate image
+        working-directory: backend
+        env:
+          OUTPUT_PATH: notice.png
+          CITY: "菏泽"
+          LAT: "35.24"
+          LON: "115.48"
+          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}   # 未配置则走本地语录兜底
+          # GLM_MODEL: "glm-4-flash"
+        run: python generate_card.py
+
+      - name: Commit image
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add notice.png
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "update notice $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
