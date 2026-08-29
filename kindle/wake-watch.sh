@@ -13,6 +13,15 @@ ARM="/mnt/us/notice_sync/arm-wake.sh"
 # 守护没被启用就直接退出
 [ -f "$FLAG" ] || exit 0
 
+# 只留一个实例: 已有在跑的就退出
+PIDFILE="/mnt/us/notice_sync/.watch.pid"
+if [ -f "$PIDFILE" ]; then
+    kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null && exit 0
+    rm -f "$PIDFILE"
+fi
+echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT
+
 echo "$(date '+%F %T') WATCH: 监听守护已启动" >> "$LOG"
 
 # --- 分支1: 监听"即将休眠", 在休眠瞬间预约闹钟 ---
