@@ -72,8 +72,13 @@ FORCE=0
 [ "$1" = "force" ] && FORCE=1
 
 # ---------- 防并发: 上一轮还没跑完就直接退出 ----------
+# 陈旧锁保护: 锁文件超过 10 分钟一律视为残留并清除。
+# 否则万一 PID 被系统复用, kill -0 会误判"还在跑", 脚本将永远静默退出。
 if [ -f "$LOCK" ]; then
-    kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null && exit 0
+    stale=$(find "$LOCK" -mmin +10 2>/dev/null)
+    if [ -z "$stale" ] && kill -0 "$(cat "$LOCK" 2>/dev/null)" 2>/dev/null; then
+        exit 0
+    fi
     rm -f "$LOCK"
 fi
 echo $$ > "$LOCK"
