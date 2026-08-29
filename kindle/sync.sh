@@ -52,11 +52,18 @@ echo $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
 # ---------- 节流: 没到时间就安静退出 ----------
+# 说明: 用系统时钟差值判断, 时钟绝对不准(慢几小时)没关系, 只要它在走就行。
+#       但要防时钟跳变: 连 WiFi 校时可能往回跳, 电池耗尽会重置到 1970,
+#       一旦 now<last 就会永远判定"没到时间"而再也不更新, 故加保护。
 if [ "$FORCE" -eq 0 ] && [ "$1" != "enable_cron" ] && [ "$1" != "disable_cron" ]; then
     now=$(date +%s)
     last=$(cat "$LAST_FILE" 2>/dev/null)
     case "$last" in ""|*[!0-9]*) last=0 ;; esac
-    [ $((now - last)) -lt "$INTERVAL" ] && exit 0
+    diff=$((now - last))
+    if [ "$diff" -ge 0 ] && [ "$diff" -lt "$INTERVAL" ]; then
+        exit 0                      # 正常节流: 还没到时间
+    fi
+    # 到这里说明: 首次运行 / 已过间隔 / 时钟异常(倒退或跳变超过 7 天) -> 都执行同步
 fi
 
 # ---------- 定时开关 ----------
