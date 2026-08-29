@@ -57,7 +57,9 @@ refresh_screensaver() {
 }
 
 FORCE=0
+QUIET=0
 [ "$1" = "force" ] && FORCE=1
+[ "$1" = "quiet" ] && QUIET=1    # 静默换图: 不刷屏、不重启服务(正要锁屏时用)
 
 # ---------- 防并发: 上一轮还没跑完就直接退出 ----------
 # 陈旧锁保护: 锁文件超过 10 分钟一律视为残留并清除。
@@ -166,15 +168,19 @@ if [ "$ok" -eq 1 ]; then
     cp "$TMP" "$OUT_PNG"
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 屏保已更新 ($size bytes)"
-    # 先让 linkss 重载(锁屏才会显示新图), 再刷一次当前屏幕
-    refresh_screensaver
-    FBINK="/mnt/us/linkss/bin/fbink"
-    if [ -x "$FBINK" ]; then
-        "$FBINK" -g "file=$OUT_PNG" -f >/dev/null 2>&1
-        log "显示: 已刷屏 (fbink)"
+    # 静默模式: 只换文件, 不做任何会唤醒屏幕的动作
+    # (刷屏和重启屏保服务都会把设备从锁屏状态拉回来, 导致锁不上屏)
+    if [ "$QUIET" -eq 1 ]; then
+        log "OK: 已静默换图 (不刷屏)"
     else
-        eips -f "$OUT_PNG" >/dev/null 2>&1
-        log "显示: 已刷屏 (eips)"
+        FBINK="/mnt/us/linkss/bin/fbink"
+        if [ -x "$FBINK" ]; then
+            "$FBINK" -g "file=$OUT_PNG" -f >/dev/null 2>&1
+            log "显示: 已刷屏 (fbink)"
+        else
+            eips -f "$OUT_PNG" >/dev/null 2>&1
+            log "显示: 已刷屏 (eips)"
+        fi
     fi
 else
     log "ERROR: 下载失败或文件无效, 保留旧屏保"

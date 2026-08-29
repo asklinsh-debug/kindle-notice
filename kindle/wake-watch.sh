@@ -46,8 +46,8 @@ lipc-wait-event -m com.lab126.powerd goingToScreenSaver,wakeupFromSuspend,resumi
             /mnt/us/notice_sync/sync.sh sync
             ;;
         goingToScreenSaver*)
-            # 进入屏保: 同步一次(换图后 linkss 会在下次休眠生效)
-            /mnt/us/notice_sync/sync.sh sync
+            # 即将锁屏: 只悄悄换图(不刷屏/不重启服务, 否则会把设备拉醒锁不上屏)
+            /mnt/us/notice_sync/sync.sh quiet
             ;;
     esac
 done
