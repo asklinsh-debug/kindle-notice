@@ -7,12 +7,13 @@
 #
 # 定时策略:
 #   - 云端每 30 分钟生成新图; 这里也每 30 分钟拉一次
-#   - crond 只在 :29 / :59 触发 (一天 48 次)
+#   - crond 只在 :29 / :59 触发 (一天 48 次), 每次都真正执行一次
+#   - 有无新内容由云端 ETag 判断 (没变就 SKIP, 不重复下载)
 #   - 每次跑完用 RTC 硬件闹钟预约 30 分钟后的下一次唤醒, 自循环
 #   - 若本机不支持 RTC 唤醒, 会退回依赖 linkss 的自动唤醒
 #
 # 命令:
-#   sync.sh                同步一次 (节流/内容未变则跳过)
+#   sync.sh                同步一次 (内容未变则跳过)
 #   sync.sh force          强制同步 (忽略节流与 ETag)
 #   sync.sh enable_cron    开启自动同步
 #   sync.sh disable_cron   关闭自动同步
@@ -30,11 +31,9 @@ OUT_PNG="/mnt/us/linkss/screensavers/bg_ss00.png"   # linkss 屏保文件
 LOG="/mnt/us/notice_sync.log"
 ETAG_FILE="/mnt/us/notice_sync/.etag"
 FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
-LAST_FILE="/mnt/us/notice_sync/.last_sync"
 LOCK="/mnt/us/notice_sync/.lock"
 
 CRON_LINE="29,59 * * * * /mnt/us/notice_sync/sync.sh"   # 每小时只在 :29 / :59 触发
-INTERVAL=1500        # 最小间隔 25 分钟, 防止意外重复执行 (正常每 30 分钟一次)
 MIN_PNG=20000        # PNG 最小体积, 用于校验
 # ==============================================
 
@@ -84,16 +83,6 @@ fi
 echo $$ > "$LOCK"
 trap 'rm -f "$LOCK"' EXIT
 
-# ---------- 节流: 没到 30 分钟就安静退出 (不开 WiFi, 零耗电) ----------
-# 时钟差值为准(绝对时间不准没关系); 顺带防时钟倒退/重置导致永远不再更新
-if [ "$FORCE" -eq 0 ] && [ "$1" != "enable_cron" ] && [ "$1" != "disable_cron" ]; then
-    now=$(date +%s)
-    last=$(cat "$LAST_FILE" 2>/dev/null)
-    case "$last" in ""|*[!0-9]*) last=0 ;; esac
-    diff=$((now - last))
-    [ "$diff" -ge 0 ] && [ "$diff" -lt "$INTERVAL" ] && exit 0
-fi
-
 # ---------- 定时开关 ----------
 if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
     mntroot rw
@@ -101,7 +90,7 @@ if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
     if [ "$1" = "enable_cron" ]; then
         echo "$CRON_LINE" >> /etc/crontab/root
         touch "$FLAG_CRON"
-        log "定时: 已开启 ($CRON_LINE, 节流 ${INTERVAL}s)"
+        log "定时: 已开启 ($CRON_LINE)"
     else
         rm -f "$FLAG_CRON"
         log "定时: 已关闭"
@@ -144,7 +133,6 @@ if [ "$FORCE" -eq 0 ]; then
     etag=$(curl -sI --connect-timeout 8 --max-time 15 "$URL_PNG" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
     if [ -n "$etag" ] && [ "$etag" = "$(cat "$ETAG_FILE" 2>/dev/null)" ] && [ -f "$OUT_PNG" ]; then
         log "SKIP: 内容未变"
-        date +%s > "$LAST_FILE"
         lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
         arm_next_wake
         exit 0
@@ -166,7 +154,6 @@ fi
 if [ "$ok" -eq 1 ]; then
     cp "$TMP" "$OUT_PNG"
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
-    date +%s > "$LAST_FILE"
     log "OK: 屏保已更新 ($size bytes)"
 else
     log "ERROR: 下载失败或文件无效, 保留旧屏保"
