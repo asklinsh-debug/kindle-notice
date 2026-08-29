@@ -40,6 +40,22 @@ MIN_PNG=20000        # PNG 最小体积, 用于校验
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
+# ---------- 让 linkss 重新加载屏保图片 ----------
+# 关键: linkss 只在"开机 / 休眠 / 屏保服务重启"时读取 screensavers 目录。
+# 我们覆盖 bg_ss00.png 之后, 必须重启屏保服务, 否则锁屏还是旧的(或默认的)。
+refresh_screensaver() {
+    LINKSS_DIR="/mnt/us/extensions/linkss"
+    if [ -x "$LINKSS_DIR/bin/linkss.sh" ]; then
+        # linkss.sh 靠 PWD 推导 hack 名, 必须先 cd 进去
+        (cd "$LINKSS_DIR" && ./bin/linkss.sh framework_restart) >/dev/null 2>&1
+        log "屏保: 已重载 (linkss)"
+    else
+        # 兜底: 直接让框架重启
+        lipc-set-prop com.lab126.winmgr frameworkRestart 1 >/dev/null 2>&1
+        log "屏保: 已重载 (备用)"
+    fi
+}
+
 FORCE=0
 [ "$1" = "force" ] && FORCE=1
 
@@ -150,8 +166,8 @@ if [ "$ok" -eq 1 ]; then
     cp "$TMP" "$OUT_PNG"
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 屏保已更新 ($size bytes)"
-    # 显示: 优先 fbink (linkss 自带, 顶部不会打印文件名)
-    #       失败则回退 eips (能显示, 但顶部会多一行路径)
+    # 先让 linkss 重载(锁屏才会显示新图), 再刷一次当前屏幕
+    refresh_screensaver
     FBINK="/mnt/us/linkss/bin/fbink"
     if [ -x "$FBINK" ]; then
         "$FBINK" -g "file=$OUT_PNG" -f >/dev/null 2>&1
