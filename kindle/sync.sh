@@ -34,7 +34,7 @@ ETAG_FILE="/mnt/us/notice_sync/.etag"
 FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
 LOCK="/mnt/us/notice_sync/.lock"
 
-CRON_LINE="29,59 * * * * /mnt/us/notice_sync/sync.sh"   # 每小时只在 :29 / :59 触发
+CRON_LINE="0,30 * * * * /mnt/us/notice_sync/sync.sh"   # 每小时只在 :29 / :59 触发
 MIN_PNG=20000        # PNG 最小体积, 用于校验
 # ==============================================
 
