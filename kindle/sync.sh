@@ -166,4 +166,6 @@ fi
 rm -f "$TMP"
 
 lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
+# 预约下一次唤醒(保持闹钟有效; 真正生效靠休眠瞬间那次写入)
+[ -x /mnt/us/notice_sync/arm-wake.sh ] && /mnt/us/notice_sync/arm-wake.sh
 exit 0
