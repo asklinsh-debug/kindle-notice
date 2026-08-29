@@ -6,17 +6,16 @@
 # 生成图片、天气、农历、公告这些全在云端 (Cloudflare Worker) 做,
 # 这里只是一个"哑终端"。
 #
-# 两种显示模式:
-#   [常亮模式] 屏幕永不休眠, eips -g 直接把看板刷在唤醒的屏幕上 (默认关闭)
-#   [屏保模式] 写到 linkss 屏保目录, 锁屏时显示 (安静, 不打扰阅读)
+# 显示方式:
+#   把图片写进 linkss 屏保目录, 锁屏时显示。
+#   同步过程不刷屏, 不会打断你阅读 (除非手动 force)。
+#   注意: 常亮模式已废弃 (会破坏锁屏路径), 请勿启用。
 #
 # 命令:
 #   sync.sh                同步一次 (内容没变则跳过)
 #   sync.sh force          强制同步并刷屏
 #   sync.sh enable_cron    开启每 15 分钟自动同步
 #   sync.sh disable_cron   关闭自动同步
-#   sync.sh enable_always_on   开启常亮显示
-#   sync.sh disable_always_on  关闭常亮显示
 #
 # 日志: /mnt/us/notice_sync.log  (插电脑可直接看)
 # ============================================================
@@ -34,9 +33,7 @@ OUT_G8="/mnt/us/notice_sync/board.g8"             # 常亮显示的灰度数据
 LOG="/mnt/us/notice_sync.log"
 ETAG_FILE="/mnt/us/notice_sync/.etag"
 FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
-FLAG_ON="/mnt/us/notice_sync/.always_on"
 CRON_LINE="*/15 * * * * /mnt/us/notice_sync/sync.sh"
-KEEPALIVE="/mnt/us/notice_sync/keepalive.sh"
 
 W=600
 H=800
@@ -47,22 +44,6 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 FORCE=0
 [ "$1" = "force" ] && FORCE=1
-
-# ---------- 常亮模式开关 ----------
-if [ "$1" = "enable_always_on" ] || [ "$1" = "disable_always_on" ]; then
-    if [ "$1" = "enable_always_on" ]; then
-        touch "$FLAG_ON"
-        "$KEEPALIVE" start
-        log "常亮: 已开启 (屏幕保持显示看板)"
-        exec "$0" force          # 立刻刷一次, 让看板出现在唤醒的屏幕上
-    else
-        rm -f "$FLAG_ON"
-        "$KEEPALIVE" stop
-        lipc-set-prop com.lab126.powerd preventScreenSaver 0 >/dev/null 2>&1
-        log "常亮: 已关闭 (恢复锁屏屏保显示)"
-        exit 0
-    fi
-fi
 
 # ---------- 定时开关 ----------
 if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
@@ -85,12 +66,6 @@ if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
     }
     [ "$1" = "enable_cron" ] && exec "$0" sync
     exit 0
-fi
-
-# ---------- 常亮状态恢复 (每次运行都重新拉起, 重启后也能自愈) ----------
-if [ -f "$FLAG_ON" ]; then
-    lipc-set-prop com.lab126.powerd preventScreenSaver 1 >/dev/null 2>&1
-    "$KEEPALIVE" start
 fi
 
 # ================= 1. 开 WiFi =================
@@ -153,11 +128,12 @@ fi
 rm -f "$TMP_G8" "$TMP_PNG"
 
 # ================= 5. 显示 =================
-# 常亮模式: 直接刷到唤醒的屏幕; 屏保模式: 不动, 锁屏时由 linkss 显示
-if [ -f "$FLAG_ON" ] && [ -f "$OUT_G8" ]; then
-    eips -c >/dev/null 2>&1
-    eips -g "$OUT_G8" >/dev/null 2>&1
-    log "显示: 已刷屏 (常亮模式)"
+# 安静模式: 只写文件, 不刷屏 (避免打断阅读)
+# 看板在锁屏时由 linkss 屏保显示
+# 想立刻看效果: KUAL -> 立即同步 后手动锁屏, 或执行 sync.sh force
+if [ "$FORCE" -eq 1 ] && [ -f "$OUT_G8" ]; then
+    eips -g "$OUT_G8" >/dev/null 2>&1   # 强制同步时才刷屏
+    log "显示: 已刷屏"
 fi
 
 lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
