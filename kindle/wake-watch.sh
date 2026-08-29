@@ -1,19 +1,27 @@
 #!/bin/sh
-# 唤醒/休眠监听守护:
-#   1) 设备被唤醒(outOfScreenSaver)   -> 立刻同步一次
-#   2) 设备即将休眠(goingToScreenSaver) -> 在那一刻预约 :00/:30 的 RTC 闹钟
-#      (必须在这时写, 否则会被系统的电源守护覆盖掉)
-# 由 sync.sh enable_cron 启动, disable_cron 停止。
+# 唤醒调度守护 (Kindle 定时自动更新的核心)
+#
+# 原理: Kindle 休眠是真挂起, crond 停止运行。要定时更新, 必须让设备定时醒来。
+#       正确做法是用 powerd 的 rtcWakeup 接口(单位: 秒), 在设备"即将挂起"
+#       (readyToSuspend)的那一刻预约下次唤醒时间。
+#       (之前试的 /sys/class/rtc/rtc0/wakealarm 在这台机器上无效, 是错的接口)
+#
+# 事件流:
+#   readyToSuspend     -> 预约 30 分钟后唤醒 (rtcWakeup 1800)
+#   wakeupFromSuspend  -> 被闹钟叫醒, 立刻同步
+#   goingToScreenSaver -> 进入屏保, 同步一次并重载 linkss
+#
+# 参考: KindleCron / kindle-display 项目的做法
 
 PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH
-LOG=/mnt/us/notice_sync.log
-FLAG=/mnt/us/notice_sync/.cron_enabled
-ARM="/mnt/us/notice_sync/arm-wake.sh"
+LOG="/mnt/us/notice_sync.log"
+FLAG="/mnt/us/notice_sync/.cron_enabled"
+INTERVAL=1800        # 唤醒间隔(秒): 1800 = 30 分钟 -> 每小时更新两次
 
 # 守护没被启用就直接退出
 [ -f "$FLAG" ] || exit 0
 
-# 只留一个实例: 已有在跑的就退出
+# 只留一个实例
 PIDFILE="/mnt/us/notice_sync/.watch.pid"
 if [ -f "$PIDFILE" ]; then
     kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null && exit 0
@@ -22,26 +30,27 @@ fi
 echo $$ > "$PIDFILE"
 trap 'rm -f "$PIDFILE"' EXIT
 
-echo "$(date '+%F %T') WATCH: 监听守护已启动" >> "$LOG"
+echo "$(date '+%F %T') WATCH: 调度守护已启动 (间隔 ${INTERVAL}s)" >> "$LOG"
 
-# --- 分支1: 监听"即将休眠", 在休眠瞬间预约闹钟 ---
-(
-    while true; do
-        lipc-wait-event -m -s 0 com.lab126.powerd goingToScreenSaver >/dev/null 2>&1
-        [ -f "$FLAG" ] || break
-        # 稍等一下, 让电源守护先写完它自己的闹钟, 我们再覆盖
-        sleep 2
-        [ -x "$ARM" ] && "$ARM"
-    done
-) &
-
-# --- 分支2: 监听"被唤醒", 立刻同步 ---
-while true; do
-    lipc-wait-event -m -s 0 com.lab126.powerd outOfScreenSaver >/dev/null 2>&1
+lipc-wait-event -m com.lab126.powerd goingToScreenSaver,wakeupFromSuspend,resuming,readyToSuspend 2>/dev/null | while read event; do
     [ -f "$FLAG" ] || break
-    sleep 3
-    /mnt/us/notice_sync/sync.sh sync
+    case "$event" in
+        readyToSuspend*)
+            # 即将挂起: 预约下次唤醒 (这是定时更新的关键一步)
+            lipc-set-prop -i com.lab126.powerd rtcWakeup "$INTERVAL" >/dev/null 2>&1
+            echo "$(date '+%F %T') WAKE: 预约 ${INTERVAL}s 后唤醒" >> "$LOG"
+            ;;
+        wakeupFromSuspend*|resuming*)
+            # 被闹钟叫醒了: 等 WiFi/框架就绪后立刻同步
+            sleep 8
+            /mnt/us/notice_sync/sync.sh sync
+            ;;
+        goingToScreenSaver*)
+            # 进入屏保: 同步一次(换图后 linkss 会在下次休眠生效)
+            /mnt/us/notice_sync/sync.sh sync
+            ;;
+    esac
 done
 
-echo "$(date '+%F %T') WATCH: 监听守护已停止" >> "$LOG"
+echo "$(date '+%F %T') WATCH: 调度守护已停止" >> "$LOG"
 exit 0
