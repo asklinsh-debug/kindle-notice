@@ -81,6 +81,10 @@ exec /mnt/us/notice_sync/wake-watch.sh
 respawn
 UPSTART_EOF
         start notice_sync_watch 2>/dev/null || initctl start notice_sync_watch 2>/dev/null
+        # 兜底: upstart 的 start 调不通时, 直接后台拉起守护
+        if ! ps 2>/dev/null | grep -v grep | grep -q "wake-watch.sh"; then
+            (setsid /mnt/us/notice_sync/wake-watch.sh >/dev/null 2>&1 &)
+        fi
         log "定时: 唤醒监听守护已启动"
     else
         stop notice_sync_watch 2>/dev/null || initctl stop notice_sync_watch 2>/dev/null
