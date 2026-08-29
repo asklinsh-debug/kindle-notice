@@ -6,8 +6,9 @@
 # 生成图片、天气、农历、公告全在云端 (Cloudflare Worker) 做, 这里只是哑终端。
 #
 # 定时策略:
-#   - 云端每 30 分钟生成新图; 这里也每 30 分钟拉一次
-#   - crond 只在 :29 / :59 触发 (一天 48 次), 每次都真正执行一次
+#   - 云端每 30 分钟 (:28/:58) 生成新图
+#   - 拉取时机: 唤醒监听守护 (lipc 订阅 powerd 唤醒事件, 一唤醒就同步)
+#               + crond :29/:59 兜底
 #   - 有无新内容由云端 ETag 判断 (没变就 SKIP, 不重复下载)
 #   - 每次跑完用 RTC 硬件闹钟预约 30 分钟后的下一次唤醒, 自循环
 #   - 若本机不支持 RTC 唤醒, 会退回依赖 linkss 的自动唤醒
@@ -39,34 +40,6 @@ MIN_PNG=20000        # PNG 最小体积, 用于校验
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
-# ---------- 预约下一次唤醒 (RTC 硬件闹钟, 到点自动醒) ----------
-# 写完脚本退出后设备会休眠, 到时间由硬件闹钟唤醒, crond 随即触发本脚本,
-# 形成 :29 -> :59 -> :29 的自循环, 一天只有 48 次唤醒。
-arm_next_wake() {
-    WAKE_DEV="/sys/class/rtc/rtc0/wakealarm"
-    [ -w "$WAKE_DEV" ] || { log "WAKE: 本机不支持 RTC 唤醒, 改为依赖 linkss 自动唤醒"; return 1; }
-
-    # 绝对时刻: 算出"下一个 :29 或 :59"的整分点 (不是 now+30min, 否则会越漂越远)
-    # 全程整数运算, 不依赖 date -d (busybox 兼容性差)
-    now=$(date +%s)
-    m=$(( now / 60 ))                 # 自 epoch 起的分钟数
-    moh=$(( m % 60 ))                 # 当前是这一小时的第几分钟
-    base=$(( m - moh ))               # 当前整点的分钟数
-    if [ "$moh" -lt 29 ]; then
-        target=$(( base + 29 ))       # 本小时 :29
-    elif [ "$moh" -lt 59 ]; then
-        target=$(( base + 59 ))       # 本小时 :59
-    else
-        target=$(( base + 60 + 29 ))  # 下一小时 :29
-    fi
-    next=$(( target * 60 ))
-
-    echo 0 > "$WAKE_DEV" 2>/dev/null
-    echo "$next" > "$WAKE_DEV" 2>/dev/null
-    log "WAKE: 下次唤醒 -> :$(( (target / 1) % 60 )) 分 (绝对时刻, 不漂移)"
-    return 0
-}
-
 FORCE=0
 [ "$1" = "force" ] && FORCE=1
 
@@ -95,7 +68,27 @@ if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
         rm -f "$FLAG_CRON"
         log "定时: 已关闭"
     fi
+    # 唤醒监听守护 (Kindle 7 休眠是真挂起, crond 不跑, RTC 闹钟也不生效;
+    # 只能靠"唤醒事件"触发同步。用 upstart 常驻, 重启自启)
+    mntroot rw
+    UPSTART_CONF="/etc/upstart/notice_sync_watch.conf"
+    if [ "$1" = "enable_cron" ]; then
+        cat > "$UPSTART_CONF" << 'UPSTART_EOF'
+description "kindle notice board wake watch"
+start on started lab126_gui
+stop on stopping lab126_gui
+exec /mnt/us/notice_sync/wake-watch.sh
+respawn
+UPSTART_EOF
+        start notice_sync_watch 2>/dev/null || initctl start notice_sync_watch 2>/dev/null
+        log "定时: 唤醒监听守护已启动"
+    else
+        stop notice_sync_watch 2>/dev/null || initctl stop notice_sync_watch 2>/dev/null
+        rm -f "$UPSTART_CONF"
+        log "定时: 唤醒监听守护已停止"
+    fi
     mntroot ro
+
     # 先杀干净所有 crond 再起一个, 否则会出现多个守护导致重复执行
     killall crond 2>/dev/null
     sleep 1
@@ -104,8 +97,7 @@ if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
     # -c /etc/crontab 必须指定, 否则 crond 读默认目录, 我们的表不生效
     crond -b -c /etc/crontab 2>/dev/null || /etc/init.d/cron restart 2>/dev/null
     log "定时: crond 已重启"
-    [ "$1" = "enable_cron" ] && arm_next_wake
-    exit 0
+    [ "$1" = "enable_cron" ] &&    exit 0
 fi
 
 # ================= 1. 开 WiFi =================
@@ -134,7 +126,6 @@ if [ "$FORCE" -eq 0 ]; then
     if [ -n "$etag" ] && [ "$etag" = "$(cat "$ETAG_FILE" 2>/dev/null)" ] && [ -f "$OUT_PNG" ]; then
         log "SKIP: 内容未变"
         lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
-        arm_next_wake
         exit 0
     fi
 fi
@@ -171,5 +162,4 @@ fi
 rm -f "$TMP"
 
 lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
-arm_next_wake      # 预约下一次, 保证链条不断
 exit 0
