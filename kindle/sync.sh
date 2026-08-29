@@ -155,6 +155,10 @@ if [ "$ok" -eq 1 ]; then
     cp "$TMP" "$OUT_PNG"
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 屏保已更新 ($size bytes)"
+    # 直接用 eips 刷到屏幕 (本机唯一验证过能显示的方式)
+    # 注意: 前面不要加 eips -c 清屏, 加了会变白屏
+    eips -f "$OUT_PNG" >/dev/null 2>&1
+    log "显示: 已刷屏"
 else
     log "ERROR: 下载失败或文件无效, 保留旧屏保"
 fi
