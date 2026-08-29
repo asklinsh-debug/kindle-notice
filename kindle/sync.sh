@@ -46,12 +46,25 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 arm_next_wake() {
     WAKE_DEV="/sys/class/rtc/rtc0/wakealarm"
     [ -w "$WAKE_DEV" ] || { log "WAKE: 本机不支持 RTC 唤醒, 改为依赖 linkss 自动唤醒"; return 1; }
+
+    # 绝对时刻: 算出"下一个 :29 或 :59"的整分点 (不是 now+30min, 否则会越漂越远)
+    # 全程整数运算, 不依赖 date -d (busybox 兼容性差)
     now=$(date +%s)
-    # 30 分钟后, 并对齐到整分 (落在下一个 :29 或 :59)
-    next=$(( now + 1800 - now % 60 ))
+    m=$(( now / 60 ))                 # 自 epoch 起的分钟数
+    moh=$(( m % 60 ))                 # 当前是这一小时的第几分钟
+    base=$(( m - moh ))               # 当前整点的分钟数
+    if [ "$moh" -lt 29 ]; then
+        target=$(( base + 29 ))       # 本小时 :29
+    elif [ "$moh" -lt 59 ]; then
+        target=$(( base + 59 ))       # 本小时 :59
+    else
+        target=$(( base + 60 + 29 ))  # 下一小时 :29
+    fi
+    next=$(( target * 60 ))
+
     echo 0 > "$WAKE_DEV" 2>/dev/null
     echo "$next" > "$WAKE_DEV" 2>/dev/null
-    log "WAKE: 已预约下次唤醒 -> $(date '+%H:%M' -d "@$next" 2>/dev/null) (30 分钟后)"
+    log "WAKE: 下次唤醒 -> :$(( (target / 1) % 60 )) 分 (绝对时刻, 不漂移)"
     return 0
 }
 
