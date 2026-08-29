@@ -6,10 +6,10 @@
 # 生成图片、天气、农历、公告全在云端 (Cloudflare Worker) 做, 这里只是哑终端。
 #
 # 定时策略:
-#   - 云端每 30 分钟生成一次新图; 这里也每 30 分钟拉一次
-#   - crond 每分钟检查, 由脚本判断满 30 分钟没 (Kindle 休眠时 crond 不跑,
-#     linkss 唤醒窗口很短, 每分钟检查才能抓住机会)
-#   - 未到时间立刻退出: 不开 WiFi、不写日志, 几乎零耗电
+#   - 云端每 30 分钟生成新图; 这里也每 30 分钟拉一次
+#   - crond 只在 :29 / :59 触发 (一天 48 次)
+#   - 每次跑完用 RTC 硬件闹钟预约 30 分钟后的下一次唤醒, 自循环
+#   - 若本机不支持 RTC 唤醒, 会退回依赖 linkss 的自动唤醒
 #
 # 命令:
 #   sync.sh                同步一次 (节流/内容未变则跳过)
@@ -33,12 +33,27 @@ FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
 LAST_FILE="/mnt/us/notice_sync/.last_sync"
 LOCK="/mnt/us/notice_sync/.lock"
 
-CRON_LINE="* * * * * /mnt/us/notice_sync/sync.sh"   # 每分钟检查
-INTERVAL=1800        # 统一节奏: 距上次同步满 30 分钟才再同步
+CRON_LINE="29,59 * * * * /mnt/us/notice_sync/sync.sh"   # 每小时只在 :29 / :59 触发
+INTERVAL=1500        # 最小间隔 25 分钟, 防止意外重复执行 (正常每 30 分钟一次)
 MIN_PNG=20000        # PNG 最小体积, 用于校验
 # ==============================================
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# ---------- 预约下一次唤醒 (RTC 硬件闹钟, 到点自动醒) ----------
+# 写完脚本退出后设备会休眠, 到时间由硬件闹钟唤醒, crond 随即触发本脚本,
+# 形成 :29 -> :59 -> :29 的自循环, 一天只有 48 次唤醒。
+arm_next_wake() {
+    WAKE_DEV="/sys/class/rtc/rtc0/wakealarm"
+    [ -w "$WAKE_DEV" ] || { log "WAKE: 本机不支持 RTC 唤醒, 改为依赖 linkss 自动唤醒"; return 1; }
+    now=$(date +%s)
+    # 30 分钟后, 并对齐到整分 (落在下一个 :29 或 :59)
+    next=$(( now + 1800 - now % 60 ))
+    echo 0 > "$WAKE_DEV" 2>/dev/null
+    echo "$next" > "$WAKE_DEV" 2>/dev/null
+    log "WAKE: 已预约下次唤醒 -> $(date '+%H:%M' -d "@$next" 2>/dev/null) (30 分钟后)"
+    return 0
+}
 
 FORCE=0
 [ "$1" = "force" ] && FORCE=1
@@ -82,6 +97,7 @@ if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
     # -c /etc/crontab 必须指定, 否则 crond 读默认目录, 我们的表不生效
     crond -b -c /etc/crontab 2>/dev/null || /etc/init.d/cron restart 2>/dev/null
     log "定时: crond 已重启"
+    [ "$1" = "enable_cron" ] && arm_next_wake
     exit 0
 fi
 
@@ -112,6 +128,7 @@ if [ "$FORCE" -eq 0 ]; then
         log "SKIP: 内容未变"
         date +%s > "$LAST_FILE"
         lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
+        arm_next_wake
         exit 0
     fi
 fi
@@ -139,4 +156,5 @@ fi
 rm -f "$TMP"
 
 lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
+arm_next_wake      # 预约下一次, 保证链条不断
 exit 0
