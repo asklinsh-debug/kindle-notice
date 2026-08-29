@@ -33,7 +33,14 @@ OUT_G8="/mnt/us/notice_sync/board.g8"             # 常亮显示的灰度数据
 LOG="/mnt/us/notice_sync.log"
 ETAG_FILE="/mnt/us/notice_sync/.etag"
 FLAG_CRON="/mnt/us/notice_sync/.cron_enabled"
-CRON_LINE="*/15 * * * * /mnt/us/notice_sync/sync.sh"
+LAST_FILE="/mnt/us/notice_sync/.last_sync"
+
+# 定时策略: crond 每分钟检查一次, 由脚本自己判断是否到了同步时间。
+# 原因: Kindle 休眠时 crond 不跑, linkss 每小时才唤醒一次, 唤醒窗口很短;
+#       用 */15 这种固定整点很容易整个错过唤醒窗口。每分钟检查 + 脚本内节流,
+#       只要设备醒着(哪怕 1 分钟)就能抓住机会同步。
+CRON_LINE="* * * * * /mnt/us/notice_sync/sync.sh"
+INTERVAL=3300        # 距上次成功同步多少秒后才再同步 (55 分钟)
 
 W=600
 H=800
@@ -44,6 +51,16 @@ log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 FORCE=0
 [ "$1" = "force" ] && FORCE=1
+
+# ---------- 节流: 没到时间就安静退出 (不开 WiFi, 几乎不耗电) ----------
+if [ "$FORCE" -eq 0 ] && [ "$1" != "enable_cron" ] && [ "$1" != "disable_cron" ]; then
+    now=$(date +%s)
+    last=$(cat "$LAST_FILE" 2>/dev/null)
+    case "$last" in ""|*[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$INTERVAL" ]; then
+        exit 0    # 未到时间, 直接退出 (不写日志, 避免刷屏)
+    fi
+fi
 
 # ---------- 定时开关 ----------
 if [ "$1" = "enable_cron" ] || [ "$1" = "disable_cron" ]; then
@@ -93,6 +110,7 @@ if [ "$FORCE" -eq 0 ]; then
     etag=$(curl -sI --connect-timeout 8 --max-time 15 "$URL_PNG" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"{print $2}')
     if [ -n "$etag" ] && [ "$etag" = "$(cat "$ETAG_FILE" 2>/dev/null)" ] && [ -f "$OUT_G8" ]; then
         log "SKIP: 内容未变"
+        date +%s > "$LAST_FILE"      # 也算一次成功, 避免下一分钟又开 WiFi 重试
         lipc-set-prop com.lab126.cmd wirelessEnable 0 >/dev/null 2>&1
         exit 0
     fi
@@ -125,6 +143,7 @@ if [ "$ok_png" -eq 1 ]; then
     log "OK: 屏保图已更新 ($(wc -c < "$TMP_PNG" | tr -d ' \t') bytes)"
 fi
 [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
+date +%s > "$LAST_FILE"      # 记下本次成功时间, 供节流判断
 rm -f "$TMP_G8" "$TMP_PNG"
 
 # ================= 5. 显示 =================
