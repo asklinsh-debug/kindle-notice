@@ -165,7 +165,10 @@ if [ -f "$TMP" ]; then
 fi
 
 if [ "$ok" -eq 1 ]; then
+    # 关键: linkss 是轮播机制, 目录里只有一张图时它认为"没变化"就一直显示缓存的旧图。
+    # 所以把新图同时写进两个轮播位(bg_ss00/bg_ss01), 它每次休眠在两者间切换时会重新读取。
     cp "$TMP" "$OUT_PNG"
+    cp "$TMP" "${OUT_PNG%bg_ss00.png}bg_ss01.png"
     [ -n "$etag" ] && echo "$etag" > "$ETAG_FILE"
     log "OK: 屏保已更新 ($size bytes)"
     # 静默模式: 只换文件, 不做任何会唤醒屏幕的动作
